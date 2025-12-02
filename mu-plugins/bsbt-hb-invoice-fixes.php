@@ -1,236 +1,354 @@
 <?php
 /**
- * Plugin Name: BSBT – Invoice overrides (ext. ref + EN + VAT row DOM + Cancel Policy)
- * Description: MotoPress HB PDF Invoices: force EN, show external booking ref, insert VAT(7%) row ABOVE TOTAL, add cancellation policy row, keep standard MPHB header.
- * Author: BS Business Travelling
+ * Plugin Name: BSBT – Cancellation Policy per Apartment
+ * Description: Adds a meta box for selecting a cancellation policy per apartment and a shortcode [bsbt_cancellation_box] for Single Accommodation.
  */
 
 if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
 
-if ( ! defined( 'BS_EXT_REF_META' ) ) {
-    define( 'BS_EXT_REF_META', '_bs_external_reservation_ref' );
+/**
+ * =========================================================
+ * 1. META BOX FOR mphb_room_type (Accommodation Type)
+ * =========================================================
+ */
+add_action( 'add_meta_boxes', function() {
+    add_meta_box(
+        'bsbt_cancel_policy',
+        'BSBT – Cancellation Policy',
+        'bsbt_render_cancel_policy_metabox',
+        'mphb_room_type',
+        'normal',
+        'default'
+    );
+} );
+
+/**
+ * Render meta box
+ */
+function bsbt_render_cancel_policy_metabox( $post ) {
+
+    // nonce
+    wp_nonce_field( 'bsbt_save_cancel_policy', 'bsbt_cancel_policy_nonce' );
+
+    $type = get_post_meta( $post->ID, '_bsbt_cancel_policy_type', true );
+
+    if ( empty( $type ) ) {
+        $type = 'nonref'; // default: Non-Refundable
+    }
+    ?>
+    <p><strong>Cancellation Policy for this apartment:</strong></p>
+
+    <p>
+        <label>
+            <input type="radio" name="bsbt_cancel_policy_type" value="nonref" <?php checked( $type, 'nonref' ); ?>>
+            Non-Refundable – 100% charged in case of cancellation, change or no-show.
+        </label><br>
+
+        <label>
+            <input type="radio" name="bsbt_cancel_policy_type" value="standard" <?php checked( $type, 'standard' ); ?>>
+            Standard Flexible – free cancellation up to 30 days before arrival, then 100% charged.
+        </label>
+    </p>
+
+    <p>
+        <small>
+            This setting controls the Cancellation Policy box shown on the Single Accommodation page via the shortcode <code>[bsbt_cancellation_box]</code>.
+            Text is displayed in English only.
+        </small>
+    </p>
+    <?php
 }
 
-/* ============================================================
- * 1) Force English while rendering PDF
- * ============================================================ */
-add_action(
-    'mphb_invoices_print_pdf_before',
-    function ( $booking_id ) {
-        if ( function_exists( 'switch_to_locale' ) ) {
-            switch_to_locale( 'en_US' );
-        }
-    },
-    1
-);
+/**
+ * Save meta
+ */
+add_action( 'save_post_mphb_room_type', function( $post_id ) {
 
-add_action(
-    'mphb_invoices_print_pdf_after',
-    function ( $booking_id ) {
-        if ( function_exists( 'restore_previous_locale' ) ) {
-            restore_previous_locale();
-        }
-    },
-    99
-);
-
-/* ============================================================
- * 2) Helper: insert VAT row before TOTAL in BOOKING_DETAILS HTML using DOM
- * ============================================================ */
-function bsbt_insert_vat_before_total_dom( string $html, string $vatHtml ): string {
-
-    if ( $html === '' || $vatHtml === '' ) {
-        return $html;
+    // nonce check
+    if (
+        ! isset( $_POST['bsbt_cancel_policy_nonce'] ) ||
+        ! wp_verify_nonce( $_POST['bsbt_cancel_policy_nonce'], 'bsbt_save_cancel_policy' )
+    ) {
+        return;
     }
 
-    libxml_use_internal_errors( true );
-
-    $dom = new DOMDocument( '1.0', 'UTF-8' );
-    $dom->loadHTML(
-        '<!DOCTYPE html><html><head><meta charset="UTF-8"></head><body>' . $html . '</body></html>',
-        LIBXML_HTML_NOIMPLIED | LIBXML_HTML_NODEFDTD
-    );
-    $xpath = new DOMXPath( $dom );
-
-    // Targets: TOTAL / GESAMT (case-insensitive)
-    $targets = $xpath->query(
-        "//tr[th and (translate(normalize-space(th[1]), 'abcdefghijklmnopqrstuvwxyzäöüß', 'ABCDEFGHIJKLMNOPQRSTUVWXYZÄÖÜSS')='TOTAL' " .
-        "or translate(normalize-space(th[1]), 'abcdefghijklmnopqrstuvwxyzäöüß', 'ABCDEFGHIJKLMNOPQRSTUVWXYZÄÖÜSS')='GESAMT')]"
-    );
-
-    // Build <tr>
-    $tr = $dom->createElement( 'tr' );
-    $tr->setAttribute( 'class', 'bsbt-vat-row' );
-
-    $th = $dom->createElement( 'th', 'VAT (7%) included' );
-
-    $td = $dom->createElement( 'td' );
-    // Главное: вставляем текст, а не HTML-фрагмент
-    $plain = html_entity_decode( wp_strip_all_tags( $vatHtml ), ENT_QUOTES, 'UTF-8' );
-    $td->appendChild( $dom->createTextNode( $plain ) );
-
-    $tr->appendChild( $th );
-    $tr->appendChild( $td );
-
-    if ( $targets && $targets->length > 0 ) {
-        $targets->item( 0 )->parentNode->insertBefore( $tr, $targets->item( 0 ) );
-    } else {
-        // Fallback: после SUBTOTAL / ZWISCHENSUMME
-        $subs = $xpath->query(
-            "//tr[th and (translate(normalize-space(th[1]), 'abcdefghijklmnopqrstuvwxyzäöüß', 'ABCDEFGHIJKLMNOPQRSTUVWXYZÄÖÜSS')='SUBTOTAL' " .
-            "or translate(normalize-space(th[1]), 'abcdefghijklmnopqrstuvwxyzäöüß', 'ABCDEFGHIJKLMNOPQRSTUVWXYZÄÖÜSS')='ZWISCHENSUMME')]"
-        );
-        if ( $subs && $subs->length > 0 ) {
-            $sub = $subs->item( 0 );
-            if ( $sub->nextSibling ) {
-                $sub->parentNode->insertBefore( $tr, $sub->nextSibling );
-            } else {
-                $sub->parentNode->appendChild( $tr );
-            }
-        } else {
-            $tbodys = $xpath->query( "//table[contains(@class,'mphb-price-breakdown')]//tbody" );
-            if ( $tbodys && $tbodys->length > 0 ) {
-                $tbodys->item( $tbodys->length - 1 )->appendChild( $tr );
-            }
-        }
+    // autosave
+    if ( defined( 'DOING_AUTOSAVE' ) && DOING_AUTOSAVE ) {
+        return;
     }
 
-    $out = $dom->saveHTML();
-    $out = preg_replace( '~^.*?<body>(.*)</body>.*$~is', '$1', $out );
+    // capability
+    if ( ! current_user_can( 'edit_post', $post_id ) ) {
+        return;
+    }
 
-    libxml_clear_errors();
+    $type = isset( $_POST['bsbt_cancel_policy_type'] ) ? sanitize_text_field( $_POST['bsbt_cancel_policy_type'] ) : 'nonref';
 
-    return $out ?: $html;
+    if ( ! in_array( $type, [ 'nonref', 'standard' ], true ) ) {
+        $type = 'nonref';
+    }
+
+    update_post_meta( $post_id, '_bsbt_cancel_policy_type', $type );
+} );
+
+/**
+ * =========================================================
+ * 2. POLICY TEXTS (ENGLISH ONLY)
+ * =========================================================
+ */
+
+function bsbt_get_cancellation_text_en( $type ) {
+
+    switch ( $type ) {
+
+        case 'standard':
+            $text  = '<p><strong>Standard Flexible Cancellation Policy</strong></p>';
+            $text .= '<ul>';
+            $text .= '<li>Free cancellation up to <strong>30 days before arrival</strong>.</li>';
+            $text .= '<li>For cancellations made <strong>29 days or less</strong> before arrival, as well as in case of no-show, <strong>100% of the total booking amount</strong> will be charged.</li>';
+            $text .= '<li>Date changes are subject to availability and must be confirmed by Stay4Fair.</li>';
+            $text .= '</ul>';
+            break;
+
+        case 'nonref':
+        default:
+
+            // ✨ NEW FINAL NON-REFUNDABLE TEXT
+            $text  = '<p><strong>✨ Non-Refundable – Better Price & Premium Support</strong></p>';
+
+            $text .= '<p>This non-refundable option is usually offered at a more attractive price than flexible bookings.</p>';
+
+            // 1. Protected & Guaranteed Booking
+            $text .= '<h4>🔐 1. Protected & Guaranteed Booking</h4>';
+            $text .= '<ul>';
+            $text .= '<li>Your booking price is <strong>locked and protected</strong>, even if market prices increase.</li>';
+            $text .= '<li>If the apartment becomes unavailable due to a landlord cancellation, Stay4Fair will arrange (if available in our database) an <strong>equivalent or superior accommodation at no extra cost</strong>.</li>';
+            $text .= '<li>Priority assistance and relocation support in case of any issues with the apartment.</li>';
+            $text .= '</ul>';
+
+            // 2. Flexible Date Adjustment
+            $text .= '<h4>🔄 2. Flexible Date Adjustment (with restrictions)</h4>';
+            $text .= '<ul>';
+            $text .= '<li>You may <strong>adjust your travel dates</strong>, subject to availability.</li>';
+            $text .= '<li>The <strong>total number of nights cannot be reduced</strong>.</li>';
+            $text .= '<li>Extending the stay with additional nights is possible (subject to availability and price difference).</li>';
+            $text .= '</ul>';
+
+            // 3. Premium Assistance
+            $text .= '<h4>🤝 3. Premium Assistance (Concierge-Style Support)</h4>';
+            $text .= '<p>Stay4Fair can assist you with:</p>';
+            $text .= '<ul>';
+            $text .= '<li>Taxi bookings and local transportation arrangements.</li>';
+            $text .= '<li>Restaurant suggestions, local tips, and basic guidance in Hannover.</li>';
+            $text .= '<li>Coordination help during your stay.</li>';
+            $text .= '</ul>';
+
+            $text .= '<p><strong>Please note:</strong><br>';
+            $text .= 'Stay4Fair only assists with <strong>organization</strong>. All third-party services (e.g., taxi fares, transportation, bookings) are <strong>paid by the guest directly</strong>.<br>';
+            $text .= 'This is not a full concierge service, but a helpful assistant for our Non-Refundable guests.</p>';
+
+            // Important note
+            $text .= '<p><strong>⚠️ Important:</strong><br>';
+            $text .= 'This booking <strong>cannot be cancelled or refunded</strong>. Full payment remains <strong>non-refundable</strong> after confirmation.</p>';
+
+            break;
+    }
+
+    return $text;
 }
 
-/* ============================================================
- * 3) Helper: insert cancellation policy row before TOTAL in BOOKING_DETAILS HTML
- * ============================================================ */
-function bsbt_insert_cancel_policy_row_dom( string $html, string $policyText ): string {
+/**
+ * =========================================================
+ * 2a. HELPERS FOR VOUCHER / INVOICE
+ * =========================================================
+ */
 
-    if ( $html === '' || $policyText === '' ) {
-        return $html;
+/**
+ * Get cancellation policy type for a given booking.
+ *
+ * @param int    $booking_id
+ * @param string $default
+ *
+ * @return string 'nonref' or 'standard'
+ */
+function bsbt_get_cancellation_policy_type_for_booking( $booking_id, $default = 'nonref' ) {
+
+    $booking_id = (int) $booking_id;
+    if ( $booking_id <= 0 ) {
+        return $default;
     }
 
-    libxml_use_internal_errors( true );
+    if ( ! function_exists( 'MPHB' ) ) {
+        return $default;
+    }
 
-    $dom = new DOMDocument( '1.0', 'UTF-8' );
-    $dom->loadHTML(
-        '<!DOCTYPE html><html><head><meta charset="UTF-8"></head><body>' . $html . '</body></html>',
-        LIBXML_HTML_NOIMPLIED | LIBXML_HTML_NODEFDTD
-    );
-    $xpath = new DOMXPath( $dom );
-
-    // Targets: TOTAL / GESAMT (case-insensitive)
-    $targets = $xpath->query(
-        "//tr[th and (translate(normalize-space(th[1]), 'abcdefghijklmnopqrstuvwxyzäöüß', 'ABCDEFGHIJKLMNOPQRSTUVWXYZÄÖÜSS')='TOTAL' " .
-        "or translate(normalize-space(th[1]), 'abcdefghijklmnopqrstuvwxyzäöüß', 'ABCDEFGHIJKLMNOPQRSTUVWXYZÄÖÜSS')='GESAMT')]"
-    );
-
-    $tr = $dom->createElement( 'tr' );
-    $tr->setAttribute( 'class', 'bsbt-cancel-policy-row' );
-
-    $th = $dom->createElement( 'th', 'CANCELLATION POLICY' );
-    $td = $dom->createElement( 'td' );
-    $td->appendChild( $dom->createTextNode( $policyText ) );
-
-    $tr->appendChild( $th );
-    $tr->appendChild( $td );
-
-    if ( $targets && $targets->length > 0 ) {
-        // 👈 здесь была ошибка: раньше стояла точка вместо ->
-        $targets->item( 0 )->parentNode->insertBefore( $tr, $targets->item( 0 ) );
-    } else {
-        // Fallback – просто в конец tbody таблицы breakdown
-        $tbodys = $xpath->query( "//table[contains(@class,'mphb-price-breakdown')]//tbody" );
-        if ( $tbodys && $tbodys->length > 0 ) {
-            $tbodys->item( $tbodys->length - 1 )->appendChild( $tr );
+    try {
+        $booking = MPHB()->getBookingRepository()->findById( $booking_id );
+        if ( ! $booking ) {
+            return $default;
         }
+
+        $reserved_rooms = $booking->getReservedRooms();
+        if ( empty( $reserved_rooms ) || ! is_array( $reserved_rooms ) ) {
+            return $default;
+        }
+
+        // Берём первый забронированный Room Type
+        $first_reserved = reset( $reserved_rooms );
+        $room_type_id   = method_exists( $first_reserved, 'getRoomTypeId' )
+            ? (int) $first_reserved->getRoomTypeId()
+            : 0;
+
+        if ( $room_type_id <= 0 ) {
+            return $default;
+        }
+
+        $type = get_post_meta( $room_type_id, '_bsbt_cancel_policy_type', true );
+        if ( empty( $type ) ) {
+            $type = 'nonref';
+        }
+
+        if ( ! in_array( $type, array( 'nonref', 'standard' ), true ) ) {
+            $type = 'nonref';
+        }
+
+        return $type;
+
+    } catch ( \Throwable $e ) {
+        return $default;
     }
-
-    $out = $dom->saveHTML();
-    $out = preg_replace( '~^.*?<body>(.*)</body>.*$~is', '$1', $out );
-
-    libxml_clear_errors();
-
-    return $out ?: $html;
 }
 
-/* ============================================================
- * 4) Variables override + VAT insertion + Cancel Policy
- * ============================================================ */
-add_filter(
-    'mphb_invoices_print_pdf_variables',
-    function ( array $vars, $booking_id ) {
+/**
+ * Short human-readable summary for the policy (voucher line).
+ *
+ * @param string $type 'nonref' or 'standard'
+ * @return string
+ */
+function bsbt_get_cancellation_short_label( $type ) {
 
-        $booking_id = (int) $booking_id;
+    switch ( $type ) {
+        case 'standard':
+            return 'Free cancellation up to 30 days before arrival; afterwards 100% of the booking amount is charged.';
 
-        // Booking Ref вместо внутреннего ID
-        $ext = trim( (string) get_post_meta( $booking_id, BS_EXT_REF_META, true ) );
-        if ( $ext !== '' ) {
-            $vars['BOOKING_ID']  = $ext;
-            $vars['CPT_BOOKING'] = 'Booking Ref';
+        case 'nonref':
+        default:
+            return 'Non-refundable booking: full amount remains non-refundable after confirmation.';
+    }
+}
+
+/**
+ * =========================================================
+ * 3. SHORTCODE [bsbt_cancellation_box]
+ * =========================================================
+ *
+ * Usage: [bsbt_cancellation_box] in Single Accommodation template
+ */
+add_shortcode( 'bsbt_cancellation_box', function( $atts ) {
+
+    $atts = shortcode_atts(
+        [
+            'id' => 0,
+        ],
+        $atts
+    );
+
+    $room_id = intval( $atts['id'] );
+    if ( ! $room_id ) {
+        $room_id = get_the_ID();
+    }
+
+    if ( ! $room_id ) {
+        return '';
+    }
+
+    $type = get_post_meta( $room_id, '_bsbt_cancel_policy_type', true );
+    if ( empty( $type ) ) {
+        $type = 'nonref';
+    }
+
+    $content = bsbt_get_cancellation_text_en( $type );
+
+    $box_class = 'bsbt-cancel-box-' . esc_attr( $type );
+
+    $html  = '<div class="bsbt-cancel-box ' . $box_class . '">';
+    $html .= '<h3 class="bsbt-cancel-title">Cancellation Policy</h3>';
+    $html .= '<div class="bsbt-cancel-content">' . $content . '</div>';
+    $html .= '<p class="bsbt-cancel-link-note">';
+    $html .= 'Full details can be found in our <a href="/cancellation-policy" target="_blank">Cancellation Policy</a> ';
+    $html .= 'and <a href="/terms-conditions-agb" target="_blank">Terms &amp; Conditions</a>.';
+    $html .= '</p>';
+    $html .= '</div>';
+
+    return $html;
+} );
+
+/**
+ * =========================================================
+ * 4. BASIC STYLES (Manrope, card, shadow, radius 10px)
+ * =========================================================
+ */
+add_action( 'wp_head', function() {
+    ?>
+    <style>
+        .bsbt-cancel-box {
+            border-radius: 10px;
+            border: 1px solid rgba(33, 47, 84, 0.10);
+            padding: 18px 20px;
+            margin: 24px 0;
+            background: #ffffff;
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
+            font-family: "Manrope", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        }
+        .bsbt-cancel-title {
+            margin: 0 0 8px;
+            font-size: 18px;
+            color: #212F54;
+            font-weight: 700;
+        }
+        .bsbt-cancel-content p {
+            margin: 0 0 6px;
+            font-size: 14px;
+            color: #212F54;
+        }
+        .bsbt-cancel-content h4 {
+            margin: 10px 0 6px;
+            font-size: 15px;
+            color: #212F54;
+            font-weight: 600;
+        }
+        .bsbt-cancel-content ul {
+            margin: 0 0 8px 18px;
+            padding: 0;
+            font-size: 14px;
+            color: #212F54;
+        }
+        .bsbt-cancel-content li {
+            margin-bottom: 4px;
+        }
+        .bsbt-cancel-link-note {
+            margin: 8px 0 0;
+            font-size: 13px;
+            color: #555555;
+        }
+        .bsbt-cancel-link-note a {
+            color: #212F54;
+            text-decoration: underline;
         }
 
-        // Заголовок по умолчанию на EN
-        if ( empty( $vars['OPTIONS_INVOICE_TITLE'] ) ) {
-            $vars['OPTIONS_INVOICE_TITLE'] = 'BOOKING INVOICE – STAY4FAIR.COM';
+        /* Slight visual difference between scenarios (optional) */
+        .bsbt-cancel-box-nonref {
+            border-color: rgba(224, 184, 73, 0.6);
+            background: #fffaf2;
         }
-
-        // ---------------------------------------------------------
-        // 4.1 Cancellation policy: короткий текст + строка в таблице
-        // ---------------------------------------------------------
-        $policyText = '';
-
-        if ( function_exists( 'bsbt_get_cancellation_policy_type_for_booking' ) ) {
-            $ptype = bsbt_get_cancellation_policy_type_for_booking( $booking_id, 'nonref' );
-
-            if ( function_exists( 'bsbt_get_cancellation_short_label' ) ) {
-                $policyText = bsbt_get_cancellation_short_label( $ptype );
-            } else {
-                // Fallback, если helper-а вдруг нет
-                $policyText = ( 'standard' === $ptype )
-                    ? 'Free cancellation up to 30 days before arrival; afterwards 100% of the booking amount is charged.'
-                    : 'Non-refundable booking: full amount remains non-refundable after confirmation.';
-            }
+        .bsbt-cancel-box-nonref .bsbt-cancel-title {
+            color: #B27F00;
         }
-
-        if ( ! empty( $policyText ) && ! empty( $vars['BOOKING_DETAILS'] ) ) {
-            // Только строка в таблице PRICE BREAKDOWN перед TOTAL
-            $vars['BOOKING_DETAILS'] = bsbt_insert_cancel_policy_row_dom(
-                (string) $vars['BOOKING_DETAILS'],
-                (string) $policyText
-            );
+        .bsbt-cancel-box-standard {
+            border-color: rgba(33, 47, 84, 0.25);
         }
-
-        // ---------------------------------------------------------
-        // 4.2 Вставляем VAT (7%) строго перед TOTAL
-        // ---------------------------------------------------------
-        if ( function_exists( 'MPHB' ) && ! empty( $vars['BOOKING_DETAILS'] ) ) {
-            try {
-                $booking = MPHB()->getBookingRepository()->findById( $booking_id );
-                if ( $booking ) {
-                    $gross = (float) $booking->getTotalPrice(); // gross includes VAT
-                    if ( $gross > 0 && function_exists( 'mphb_format_price' ) ) {
-                        $vat = round( $gross - ( $gross / 1.07 ), 2 );
-                        if ( $vat > 0 ) {
-                            $vatHtml                = mphb_format_price( $vat ); // HTML со знаком €
-                            $vars['BOOKING_DETAILS'] = bsbt_insert_vat_before_total_dom(
-                                (string) $vars['BOOKING_DETAILS'],
-                                (string) $vatHtml
-                            );
-                        }
-                    }
-                }
-            } catch ( \Throwable $e ) {
-                // ignore any PDF DOM errors
-            }
-        }
-
-        return $vars;
-    },
-    10,
-    2
-);
+    </style>
+    <?php
+} );
