@@ -1,7 +1,7 @@
 <?php
 /**
  * Plugin Name: BSBT – Booking Flow Mode & Channel
- * Description: Добавляет к брони MotoPress Hotel Booking режим flow_mode (auto/manual) и канал (Booking.com, Airbnb, Direct и т.д.) с метабоксом и колонкой в админке.
+ * Description: Добавляет к брони MotoPress Hotel Booking режим flow_mode (auto/manual) и канал (Booking.com, Airbnb, Direct и т.д.) с метабоксом и колонкой в админке. Для flow_mode=manual блокирует авто-письма MPHB при работе с бронью в админке.
  * Author: BS Business Travelling / Stay4Fair.com
  */
 
@@ -20,6 +20,9 @@ if ( ! defined( 'BSBT_FLOW_META' ) ) {
 if ( ! defined( 'BSBT_CHANNEL_META' ) ) {
     define( 'BSBT_CHANNEL_META', '_bsbt_channel' ); // booking_com | airbnb | direct | phone | email | whatsapp | other
 }
+
+// Глобальный флаг для suppression писем в рамках текущего запроса
+$GLOBALS['bsbt_suppress_booking_email_for'] = 0;
 
 // ==========================================
 // 1) Дефолтный flow_mode при создании брони
@@ -144,7 +147,7 @@ function bsbt_save_booking_flow_meta( $post_id, $post, $update ) {
 
     // Сохраняем Flow mode
     if ( isset( $_POST['bsbt_flow_mode'] ) ) {
-        $mode = sanitize_text_field( $_POST['bsbt_flow_mode'] );
+        $mode = sanitize_text_field( wp_unslash( $_POST['bsbt_flow_mode'] ) );
 
         if ( ! in_array( $mode, array( 'auto', 'manual' ), true ) ) {
             $mode = 'auto';
@@ -155,7 +158,7 @@ function bsbt_save_booking_flow_meta( $post_id, $post, $update ) {
 
     // Сохраняем Channel
     if ( isset( $_POST['bsbt_channel'] ) ) {
-        $channel = sanitize_text_field( $_POST['bsbt_channel'] );
+        $channel = sanitize_text_field( wp_unslash( $_POST['bsbt_channel'] ) );
         update_post_meta( $post_id, BSBT_CHANNEL_META, $channel );
     }
 }
@@ -172,7 +175,7 @@ function bsbt_save_booking_flow_meta( $post_id, $post, $update ) {
 add_filter( 'manage_mphb_booking_posts_columns', 'bsbt_add_booking_flow_columns' );
 function bsbt_add_booking_flow_columns( $columns ) {
 
-    // Вставим после колонки с датой или статуса
+    // Вставим после колонки с title
     $new = array();
 
     foreach ( $columns as $key => $label ) {
@@ -225,4 +228,90 @@ function bsbt_render_booking_flow_columns( $column, $post_id ) {
             echo '<span style="font-size:11px;">' . esc_html( $label ) . '</span>';
         }
     }
+}
+
+// ==========================================
+// 5) ОТКЛЮЧЕНИЕ АВТО-ПИСЕМ ДЛЯ flow_mode = manual
+// ==========================================
+//
+// Идея:
+// - При сохранении/создании брони в админке смотрим, какой flow_mode будет у этой брони.
+// - Если manual → запоминаем ID брони в глобале $bsbt_suppress_booking_email_for.
+// - Фильтр pre_wp_mail проверяет: если глобал > 0 и в subject/body встречается этот booking_id
+//   (как число, с или без #) → возвращаем WP_Error и блокируем отправку.
+// - Для фронта (auto-брони) suppression не включается вообще.
+//
+
+add_action( 'save_post_mphb_booking', 'bsbt_flag_manual_booking_email_suppression', 1, 3 );
+function bsbt_flag_manual_booking_email_suppression( $post_id, $post, $update ) {
+
+    // Только админ, без автосейвов/ревизий
+    if ( ! is_admin() ) {
+        return;
+    }
+    if ( wp_is_post_revision( $post_id ) ) {
+        return;
+    }
+    if ( defined( 'DOING_AUTOSAVE' ) && DOING_AUTOSAVE ) {
+        return;
+    }
+
+    // Какой режим будет после сохранения?
+    $mode_meta = get_post_meta( $post_id, BSBT_FLOW_META, true );
+
+    // Смотрим, что пришло из формы (если пользователь руками сменил режим)
+    $posted_mode = isset( $_POST['bsbt_flow_mode'] ) ? sanitize_text_field( wp_unslash( $_POST['bsbt_flow_mode'] ) ) : '';
+
+    if ( $posted_mode === 'auto' || $mode_meta === 'auto' ) {
+        // Явно авто → suppression не нужен
+        return;
+    }
+
+    // Если явно выбрали manual или мета пустая, но мы в админке → считаем бронь manual
+    if ( $posted_mode === 'manual' || $mode_meta === 'manual' || ( empty( $mode_meta ) && is_admin() ) ) {
+        $GLOBALS['bsbt_suppress_booking_email_for'] = (int) $post_id;
+    }
+}
+
+// Глобальный фильтр wp_mail: мягко глушим письма для текущей manual-брони
+add_filter( 'pre_wp_mail', 'bsbt_maybe_block_manual_booking_mail', 10, 2 );
+function bsbt_maybe_block_manual_booking_mail( $null, $atts ) {
+
+    $booking_id = isset( $GLOBALS['bsbt_suppress_booking_email_for'] )
+        ? (int) $GLOBALS['bsbt_suppress_booking_email_for']
+        : 0;
+
+    // Если не в процессе сохранения manual-брони — выходим
+    if ( $booking_id <= 0 ) {
+        return $null;
+    }
+
+    if ( ! is_admin() ) {
+        // На фронте ничего не режем
+        return $null;
+    }
+
+    $subject = isset( $atts['subject'] ) ? (string) $atts['subject'] : '';
+    $message = isset( $atts['message'] ) ? (string) $atts['message'] : '';
+
+    if ( $subject === '' && $message === '' ) {
+        return $null;
+    }
+
+    // Ищем booking_id как число, возможно с # перед ним.
+    // Например: "Reservation 123", "Booking #123", "Buchung Nr. 123" и т.п.
+    $id_str  = (string) $booking_id;
+    $pattern = '/(?:#\s*)?' . preg_quote( $id_str, '/' ) . '\b/';
+
+    if ( ! preg_match( $pattern, $subject . ' ' . $message ) ) {
+        // В письме нет этого ID → не наше, пропускаем
+        return $null;
+    }
+
+    // Блокируем авто-отправку
+    return new WP_Error(
+        'bsbt_manual_booking_no_auto_email',
+        sprintf( 'Auto email suppressed for manual booking #%d', $booking_id ),
+        $atts
+    );
 }
