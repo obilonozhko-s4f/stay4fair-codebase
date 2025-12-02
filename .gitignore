@@ -1,0 +1,16 @@
+# System
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.code-workspace
+
+# Logs
+*.log
+
+# Node / build (на будущее)
+node_modules/
+dist/
+build/
