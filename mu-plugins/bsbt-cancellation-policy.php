@@ -114,13 +114,45 @@ function bsbt_get_cancellation_text_en( $type ) {
 
         case 'nonref':
         default:
-            $text  = '<p><strong>Non-Refundable Cancellation Policy</strong></p>';
+
+            // ✨ NEW FINAL NON-REFUNDABLE TEXT
+            $text  = '<p><strong>✨ Non-Refundable – Better Price & Premium Support</strong></p>';
+
+            $text .= '<p>This non-refundable option is usually offered at a more attractive price than flexible bookings.</p>';
+
+            // 1. Protected & Guaranteed Booking
+            $text .= '<h4>🔐 1. Protected & Guaranteed Booking</h4>';
             $text .= '<ul>';
-            $text .= '<li>This reservation is <strong>non-refundable</strong>.</li>';
-            $text .= '<li>In case of cancellation, modification or no-show, <strong>100% of the total booking amount</strong> will be charged.</li>';
-            $text .= '<li>Paid amounts cannot be refunded under any circumstances.</li>';
-            $text .= '<li>Date changes are not possible.</li>';
+            $text .= '<li>Your booking price is <strong>locked and protected</strong>, even if market prices increase.</li>';
+            $text .= '<li>If the apartment becomes unavailable due to a landlord cancellation, Stay4Fair will arrange (if available in our database) an <strong>equivalent or superior accommodation at no extra cost</strong>.</li>';
+            $text .= '<li>Priority assistance and relocation support in case of any issues with the apartment.</li>';
             $text .= '</ul>';
+
+            // 2. Flexible Date Adjustment
+            $text .= '<h4>🔄 2. Flexible Date Adjustment (with restrictions)</h4>';
+            $text .= '<ul>';
+            $text .= '<li>You may <strong>adjust your travel dates</strong>, subject to availability.</li>';
+            $text .= '<li>The <strong>total number of nights cannot be reduced</strong>.</li>';
+            $text .= '<li>Extending the stay with additional nights is possible (subject to availability and price difference).</li>';
+            $text .= '</ul>';
+
+            // 3. Premium Assistance
+            $text .= '<h4>🤝 3. Premium Assistance (Concierge-Style Support)</h4>';
+            $text .= '<p>Stay4Fair can assist you with:</p>';
+            $text .= '<ul>';
+            $text .= '<li>Taxi bookings and local transportation arrangements.</li>';
+            $text .= '<li>Restaurant suggestions, local tips, and basic guidance in Hannover.</li>';
+            $text .= '<li>Coordination help during your stay.</li>';
+            $text .= '</ul>';
+
+            $text .= '<p><strong>Please note:</strong><br>';
+            $text .= 'Stay4Fair only assists with <strong>organization</strong>. All third-party services (e.g., taxi fares, transportation, bookings) are <strong>paid by the guest directly</strong>.<br>';
+            $text .= 'This is not a full concierge service, but a helpful assistant for our Non-Refundable guests.</p>';
+
+            // Important note
+            $text .= '<p><strong>⚠️ Important:</strong><br>';
+            $text .= 'This booking <strong>cannot be cancelled or refunded</strong>. Full payment remains <strong>non-refundable</strong> after confirmation.</p>';
+
             break;
     }
 
@@ -131,8 +163,6 @@ function bsbt_get_cancellation_text_en( $type ) {
  * =========================================================
  * 3. SHORTCODE [bsbt_cancellation_box]
  * =========================================================
- *
- * Usage: [bsbt_cancellation_box] in Single Accommodation template
  */
 add_shortcode( 'bsbt_cancellation_box', function( $atts ) {
 
@@ -200,6 +230,12 @@ add_action( 'wp_head', function() {
             margin: 0 0 6px;
             font-size: 14px;
             color: #212F54;
+        }
+        .bsbt-cancel-content h4 {
+            margin: 10px 0 6px;
+            font-size: 15px;
+            color: #212F54;
+            font-weight: 600;
         }
         .bsbt-cancel-content ul {
             margin: 0 0 8px 18px;
