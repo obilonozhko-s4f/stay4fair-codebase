@@ -133,10 +133,36 @@ function bs_bt_render_voucher_html($booking_id) {
 	$check_in  = trim((string)get_post_meta($booking_id,'mphb_check_in_date',true));
 	$check_out = trim((string)get_post_meta($booking_id,'mphb_check_out_date',true));
 
+	// 🔐 Cancellation policy (based on the first reserved room)
+	$policy_type = function_exists('bsbt_get_cancellation_policy_type_for_booking')
+		? bsbt_get_cancellation_policy_type_for_booking($booking_id, 'nonref')
+		: 'nonref';
+
+	if (function_exists('bsbt_get_cancellation_short_label')) {
+		$policy_short = bsbt_get_cancellation_short_label($policy_type);
+	} else {
+		$policy_short = ($policy_type === 'standard')
+			? 'Free cancellation up to 30 days before arrival (then 100% charged).'
+			: 'Non-refundable reservation (full amount charged; no cancellation or refund).';
+	}
+
+	$policy_full_html = function_exists('bsbt_get_cancellation_text_en')
+		? bsbt_get_cancellation_text_en($policy_type)
+		: '<p>Cancellation policy details are currently unavailable.</p>';
+	/**
+	 * PDF / email fallback: remove emoji symbols that are not supported by DejaVu Sans
+	 */
+	$policy_full_html = str_replace(
+		array('✨', '🔐', '🔄', '🤝', '⚠️'),
+		'',
+		$policy_full_html
+	);
+
 	// Voucher number (внешний приоритет)
 	$voucher_no = bs_bt_get_voucher_number($booking_id);
 
-	$contact_line = 'Our service number: WhatsApp +49 176 24615269 · business@stay4fair.com';
+	// ОБНОВЛЁННАЯ КОНТАКТНАЯ СТРОКА
+	$contact_line = 'WhatsApp: +49 176 24615269 · E-mail: business@stay4fair.com · stay4fair.com';
 
 	ob_start(); ?>
 <!doctype html>
@@ -156,9 +182,33 @@ function bs_bt_render_voucher_html($booking_id) {
 	.label{font-weight:700;}
 	.small{font-size:11px;line-height:1.45;}
 	.kv div{margin:2px 0;}
+
+	/* ===== TOP BAR: LOGO + CONTACTS ===== */
+	.topbar{display:table;width:100%;margin-bottom:10px;}
+	.topbar-left,.topbar-right{display:table-cell;vertical-align:middle;}
+	.topbar-right{text-align:right;font-size:11px;line-height:1.5;color:#333;}
+	.topbar-logo{max-height:60px;}
+	.topbar-right a{color:#111;text-decoration:none;}
 </style>
 </head>
 <body>
+
+  <!-- TOP BAR: LOGO + CONTACTS -->
+    <div class="topbar">
+    <div class="topbar-left">
+      <img src="<?php echo esc_url( 'https://stay4fair.com/wp-content/uploads/2025/12/gorizontal-color-4.png' ); ?>"
+           alt="Stay4Fair"
+           class="topbar-logo">
+    </div>
+    <div class="topbar-right">
+
+
+      <div>E-mail: business@stay4fair.com</div>
+      <div>WhatsApp: <a href="https://wa.me/4917624615269">+49 176 24615269</a></div>
+      <div>stay4fair.com</div>
+    </div>
+  </div>
+
   <div class="h1">Booking Voucher</div>
   <div class="brand">Stay4Fair.com</div>
   <div class="muted">Voucher No: <?php echo esc_html($voucher_no); ?> · Booking ID: <?php echo (int)$booking_id; ?></div>
@@ -201,8 +251,14 @@ function bs_bt_render_voucher_html($booking_id) {
       Please note: this is a private apartment.<br>
       Light cleaning will be performed every third day. We kindly ask you to keep the apartment in order, too.<br>
       At check-out, you may leave the keys on the table and close the door, or coordinate your check-out time with our manager or the landlord to hand over the keys personally.<br>
-      Cancellation policy: <strong>Non-Refundable Reservation</strong>. For details, see our website: stay4fair.com.<br>
-      In case of any damage to the landlord’s property, the client must compensate the damage to the company or the landlord.
+      Please handle the apartment and its inventory with care. In case of any damage to the landlord’s property, the guest must compensate the damage to the company or directly to the landlord.
+    </div>
+  </div>
+
+  <div class="box mt small">
+    <div class="label">Cancellation policy details</div>
+    <div>
+      <?php echo $policy_full_html; // policy text contains controlled HTML ?>
     </div>
   </div>
 
@@ -402,6 +458,8 @@ function bs_bt_send_voucher_email($booking_id, $source='auto', $override_email=n
 		}
 		$guest_email = $override_email;
 	}
+  
+
 	if (empty($guest_email) || !is_email($guest_email)) {
 		return bs_bt_log_voucher_send($booking_id, array(
 			'to'=>$guest_email ?: '(empty)','subject'=>'(not sent — no guest email)',
@@ -433,7 +491,7 @@ function bs_bt_send_voucher_email($booking_id, $source='auto', $override_email=n
 	} catch (\Throwable $e) {}
 
 	$attachments = array();
-	if (file_exists($file)) $attachments[] = $file;
+		if (file_exists($file)) $attachments[] = $file;
 
 	add_filter('wp_mail_from_name', function($n){ return 'Stay4Fair Reservations'; });
 	add_filter('wp_mail_from', function($e){ return 'business@stay4fair.com'; });
